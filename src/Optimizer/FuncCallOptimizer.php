@@ -1121,7 +1121,7 @@ trait FuncCallOptimizer
         if ($this->isVarExpr($obj) && isset($this->context->exactObjects[$obj->name])) {
             return $this->getLiteralString($this->context->exactObjects[$obj->name]);
         }
-        return 'php::fn::get_class(' . $this->parseIdentifier($obj) . ')';
+        return false;
     }
 
     protected function genGetParentClass(string $n, Node\Expr\FuncCall $e, array $c): string

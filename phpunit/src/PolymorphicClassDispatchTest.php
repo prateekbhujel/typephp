@@ -23,9 +23,10 @@ final class PolymorphicClassDispatchTest extends BaseTest
             $code,
         );
 
-        // Polymorphic get_class() must NOT fold to BaseAnimal; it must invoke runtime get_class
+        // Polymorphic get_class() must NOT fold or blindly invoke unchecked C++ helper;
+        // it must use runtime php::call to enforce PHP argument semantics (TypeError on null)
         self::assertMatchesRegularExpression(
-            '/php_getpolymorphicclass\(\) \{.*?tmp_var_\d+ = \(php::fn::get_class\(animal\)\);/s',
+            "/php_getpolymorphicclass\(\) \{.*?tmp_var_\d+ = \(php::call\(get_persistent_func\(PersistentFuncId\{0\}, get_str\(3\)\), php::VarList\{animal\}\)\);/s",
             $code,
         );
 
@@ -35,9 +36,15 @@ final class PolymorphicClassDispatchTest extends BaseTest
             $code,
         );
 
-        // Polymorphic static call must NOT statically bind to BaseAnimal; it must dispatch dynamically
+        // Polymorphic static call from global function dispatches dynamically via callStaticMethod
         self::assertMatchesRegularExpression(
             '/php_callpolymorphicstatic\(\) \{.*?php::callStaticMethod\([^)]+\)/s',
+            $code,
+        );
+
+        // Polymorphic static call from within a class method preserves lexical callable scope
+        self::assertMatchesRegularExpression(
+            "/php_basescopedcaller__exercise\(.*?php::CallableScope (tmp_var_\d+) = php::getCallableScope\(.*?php::callScoped\(php::concat\(.*?, \\1\)/s",
             $code,
         );
     }

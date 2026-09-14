@@ -44,3 +44,20 @@ function callPolymorphicStatic(): string
     $animal = makeAnimal();
     return $animal::identify();
 }
+
+class BaseScopedCaller
+{
+    protected static function identifyProtected(): string
+    {
+        return static::class;
+    }
+
+    public static function exercise(BaseScopedCaller $obj): string
+    {
+        return $obj::identifyProtected();
+    }
+}
+
+class ChildScopedCaller extends BaseScopedCaller
+{
+}

@@ -1076,6 +1076,7 @@ trait MethodCallTrait
         $rtClass = '';
         $cacheCallable = false;
         $directStaticCall = false;
+        $scopedStaticCall = false;
         $staticCallTarget = '';
         $staticCallMethod = '';
         $canUseDirectCallScope = $this->isNameExpr($expr->class) && $this->isIdExpr($expr->name);
@@ -1125,7 +1126,11 @@ trait MethodCallTrait
                 }
             }
             $placeHolder = $fn;
-            $directStaticCall = true;
+            if ($this->methodDef !== null) {
+                $scopedStaticCall = true;
+            } else {
+                $directStaticCall = true;
+            }
         } elseif ($this->isVarExpr($expr->name)) {
             $staticCallMethod = $this->methodNameToStr($expr->name, literal: true);
             if ($class === 'static') {
@@ -1236,6 +1241,9 @@ trait MethodCallTrait
         }
 
         if (empty($expr->args)) {
+            if ($scopedStaticCall) {
+                return 'php::callScoped(' . $fn . ', ' . $this->getCallableScopeExpr() . ')';
+            }
             if ($directStaticCall) {
                 return 'php::callStaticMethod(' . $staticCallTarget . ', ' . $staticCallMethod . ')';
             }
@@ -1245,6 +1253,10 @@ trait MethodCallTrait
             return 'php::call(' . $fn . ')';
         }
         try {
+            if ($scopedStaticCall) {
+                return 'php::callScoped(' . $fn . ', ' . $this->getCallableScopeExpr() . ', '
+                    . $this->parseCallArgs($expr->args, $rtFunc, $rtClass) . ')';
+            }
             if ($directStaticCall) {
                 return 'php::callStaticMethod(' . $staticCallTarget . ', ' . $staticCallMethod . ', '
                     . $this->parseCallArgs($expr->args, $rtFunc, $rtClass) . ')';
