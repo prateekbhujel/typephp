@@ -68,8 +68,6 @@ function main(): void
     var_dump(globalCallPublic($child));
     var_dump(globalCallPublic($sub));
 }
-
-main();
 ?>
 --EXPECT--
 string(5) "Child"

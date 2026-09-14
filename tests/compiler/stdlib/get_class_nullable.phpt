@@ -59,8 +59,6 @@ function main(): void
     testExact();
     testNullable();
 }
-
-main();
 ?>
 --EXPECT--
 string(3) "Dog"
