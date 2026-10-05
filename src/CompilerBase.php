@@ -3459,8 +3459,12 @@ abstract class CompilerBase implements PropertyAccessContext
             case 'Expr_BinaryOp_GreaterOrEqual':
                 return Type::BOOL;
             case 'Expr_BitwiseNot':
-                $inner = $this->detectTypeOfExpr($expr->expr);
-                return $inner === Type::BIGINT ? Type::BIGINT : Type::INT;
+                $inner = Type::getReferencedType($this->detectTypeOfExpr($expr->expr));
+                return match ($inner) {
+                    Type::BIGINT => Type::BIGINT,
+                    Type::BOOL, Type::INT, Type::FLOAT => Type::INT,
+                    default => Type::VAR,
+                };
             case 'Expr_Print':
             case 'Expr_Cast_Int':
                 return Type::INT;

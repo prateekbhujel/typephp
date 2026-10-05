@@ -93,9 +93,11 @@ class NativePropertyTest extends \BaseTest
 
         $code = file_get_contents($outputFile);
         $this->assertStringContainsString('php::Int &_object_prop_this___flags = this_.attrInt(', $code);
-        // A TypePHP class constant is available during conversion and is
-        // folded before the native property operation is emitted.
-        $this->assertStringContainsString('_object_prop_this___flags &= (~php::toInt(1L));', $code);
+        // The constant folds to 1L, but its unknown static type selects Zend
+        // bitwise not. Check the property write after the dynamic operation.
+        $this->assertStringContainsString('(~php::Var(1L))', $code);
+        $this->assertStringContainsString('typephp_write_property_scoped(this_', $code);
+        $this->assertStringNotContainsString('_object_prop_this___flags &= ', $code);
     }
 
     public function testNativePropertyWriteConvertsOnlyWhenTypesDiffer(): void

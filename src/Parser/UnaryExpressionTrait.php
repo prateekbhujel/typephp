@@ -79,13 +79,16 @@ trait UnaryExpressionTrait
             return $pythonOperator;
         }
         $this->assertNativeObjectOperatorOperandSupported($expr->expr, $expr, '~', true);
-        $type = $this->detectTypeOfExpr($expr->expr);
+        $type = Type::getReferencedType($this->detectTypeOfExpr($expr->expr));
         $this->assertExprCanBeUsedAsValue($expr->expr, 'bitwise operand');
         if ($type === Type::BIGINT) {
             return 'php::BigInt::bitNot(' . $this->parseExpr($expr->expr) . ')';
         }
-        $var = $this->parseIdentifier($expr->expr);
-        return '~' . $this->convertIntExpr($var);
+        $var = $this->parseExprAsValue($expr->expr);
+        if (in_array($type, [Type::BOOL, Type::INT, Type::FLOAT], true)) {
+            return '~' . $this->convertIntExpr($var);
+        }
+        return '(~php::Var(' . $var . '))';
     }
 
     protected function parseBooleanNot(Expr\BooleanNot $expr): string
