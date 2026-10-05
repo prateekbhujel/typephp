@@ -18,7 +18,7 @@ final class IntegrationFailure extends RuntimeException
 {
 }
 
-/** @return array{compiler: string, compiler_ini_scan_dir: string, php: string, php_fpm: string, keep: bool, suite: string} */
+/** @return array{compiler: string, compiler_ini_scan_dir: string, php: string, php_fpm: string, keep: bool, suite: string, fpm_php_version: string} */
 function parseIntegrationOptions(array $argv): array
 {
     $options = [
@@ -28,6 +28,7 @@ function parseIntegrationOptions(array $argv): array
         'php_fpm' => '',
         'keep' => false,
         'suite' => 'all',
+        'fpm_php_version' => '8.5',
     ];
 
     foreach (array_slice($argv, 1) as $argument) {
@@ -39,7 +40,7 @@ function parseIntegrationOptions(array $argv): array
             $options['suite'] = substr($argument, strlen('--suite='));
             continue;
         }
-        foreach (['compiler', 'compiler-ini-scan-dir', 'php', 'php-fpm'] as $name) {
+        foreach (['compiler', 'compiler-ini-scan-dir', 'php', 'php-fpm', 'fpm-php-version'] as $name) {
             $prefix = '--' . $name . '=';
             if (str_starts_with($argument, $prefix)) {
                 $key = str_replace('-', '_', $name);
@@ -50,8 +51,11 @@ function parseIntegrationOptions(array $argv): array
         throw new IntegrationFailure('Unknown option: ' . $argument);
     }
 
-    if (!in_array($options['suite'], ['all', 'ext', 'lib'], true)) {
-        throw new IntegrationFailure('Invalid --suite value; expected all, ext, or lib');
+    if (!in_array($options['suite'], ['all', 'ext', 'lib', 'fpm'], true)) {
+        throw new IntegrationFailure('Invalid --suite value; expected all, ext, lib, or fpm');
+    }
+    if (!in_array($options['fpm_php_version'], ['8.4', '8.5'], true)) {
+        throw new IntegrationFailure('Invalid --fpm-php-version value; expected 8.4 or 8.5');
     }
 
     foreach (['compiler', 'php'] as $name) {
@@ -72,7 +76,7 @@ function parseIntegrationOptions(array $argv): array
         $options['compiler_ini_scan_dir'] = $path;
     }
 
-    if ($options['suite'] !== 'lib') {
+    if (in_array($options['suite'], ['all', 'ext'], true)) {
         if ($options['php_fpm'] === '') {
             $prefix = integrationPhpPrefix($options['php']);
             $candidates = [
@@ -264,8 +268,11 @@ function assertLifecycleBody(string $body, int $request, ?int &$expectedPid, str
     $expectedPid = $pid;
 }
 
-/** @return array{process: resource, pipes: array<int, resource>} */
-function startIntegrationProcess(array $command, ?string $workingDirectory = null): array
+/**
+ * @param array<string, string> $environment
+ * @return array{process: resource, pipes: array<int, resource>}
+ */
+function startIntegrationProcess(array $command, ?string $workingDirectory = null, array $environment = []): array
 {
     fwrite(STDOUT, '$ ' . implode(' ', array_map('escapeshellarg', $command)) . PHP_EOL);
     $process = proc_open(
@@ -273,7 +280,7 @@ function startIntegrationProcess(array $command, ?string $workingDirectory = nul
         [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
         $pipes,
         $workingDirectory,
-        integrationEnvironment(),
+        array_replace(integrationEnvironment(), $environment),
         ['bypass_shell' => true],
     );
     if (!is_resource($process)) {
@@ -465,6 +472,74 @@ function requestFastCgi(int $port, string $script, int $request, float $timeout 
         throw new IntegrationFailure('Unexpected FastCGI response: ' . $stdout);
     }
     return trim($parts[1] ?? '');
+}
+
+function runFpmIntegration(array $options, string $temporaryRoot): void
+{
+    fwrite(STDOUT, "\n[FPM] embedded opcode lazy superglobals and request isolation\n");
+    $temporaryRoot = realpath($temporaryRoot);
+    $project = $temporaryRoot . '/globals';
+    copyIntegrationTree(TYPEPHP_INTEGRATION_TEST_ROOT . '/fpm/globals', $project);
+    $binary = $temporaryRoot . '/globals-fpm';
+    runIntegrationCommand([
+        $options['compiler'], $project . '/project.yml',
+        '--php-version', $options['fpm_php_version'],
+        '--output', $binary, '--build-dir', $temporaryRoot . '/fpm-build',
+        '--job', '8', '--no-progress',
+    ], environment: integrationCompilerEnvironment($options), timeout: 1800);
+
+    // FPM requires a physical primary-script path before calling the compile hook.
+    // A successful response must nevertheless come from the embedded opcode.
+    file_put_contents($project . '/request.php', '<?php throw new RuntimeException("Disk fallback used");');
+    unlink($project . '/later.php');
+    $port = reserveIntegrationPort();
+    $config = $temporaryRoot . '/php-fpm.conf';
+    $log = $temporaryRoot . '/php-fpm.log';
+    file_put_contents($config, <<<INI
+[global]
+error_log = {$log}
+daemonize = no
+[www]
+listen = 127.0.0.1:{$port}
+pm = static
+pm.max_children = 1
+pm.max_requests = 0
+clear_env = no
+catch_workers_output = yes
+INI);
+    $server = startIntegrationProcess([
+        $binary, '-n', '-d', 'auto_globals_jit=1', '-d', 'register_argc_argv=0',
+        '-d', 'variables_order=EGPCS', '-d', 'request_order=GP',
+        '-d', 'display_errors=1', '-d', 'log_errors=1',
+        '-y', $config, '-F', '-O',
+    ], environment: ['TYPEPHP_INTEGRATION_ENV' => 'embedded-globals']);
+    try {
+        $first = waitForIntegrationServer(
+            $server, fn(): string => requestFastCgi($port, $project . '/request.php', 1),
+        );
+        $pid = null;
+        for ($request = 1; $request <= 3; ++$request) {
+            $body = $request === 1 ? $first : requestFastCgi($port, $project . '/request.php', $request);
+            $data = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+            $pid ??= $data['pid'];
+            assertIntegrationTrue($pid === $data['pid'], 'Requests must reuse the same FPM worker');
+            assertIntegrationSame(json_encode([
+                'server_array' => true, 'env_array' => true, 'request_array' => true,
+                'method' => 'GET', 'uri' => "/request.php?request={$request}",
+                'query' => (string) $request, 'request' => (string) $request,
+                'env' => 'embedded-globals', 'previous' => null,
+            ]), json_encode($data['initial']), 'Lazy superglobals or request isolation failed');
+            assertIntegrationSame(json_encode([
+                'server-preserved', 'env-preserved', 'request-preserved',
+            ]), json_encode($data['later']), 'A subsequent embedded include reset superglobals');
+        }
+        fwrite(STDOUT, "PASS: SERVER/ENV/REQUEST, three requests in one worker, embedded include preserves mutations\n");
+    } finally {
+        $logs = stopIntegrationProcess($server);
+        if ($logs !== '') {
+            fwrite(STDOUT, $logs);
+        }
+    }
 }
 
 function runExtIntegration(array $options, string $temporaryRoot): void
@@ -716,8 +791,11 @@ function main(array $argv): int
         if ($options['suite'] === 'all' || $options['suite'] === 'lib') {
             runLibIntegration($options, $temporaryRoot);
         }
+        if ($options['suite'] === 'fpm') {
+            runFpmIntegration($options, $temporaryRoot);
+        }
         $succeeded = true;
-        fwrite(STDOUT, "\nEXT/LIB integration tests passed\n");
+        fwrite(STDOUT, "\nIntegration tests passed\n");
         return 0;
     } catch (Throwable $error) {
         fwrite(STDERR, "\nFAIL: {$error->getMessage()}\n");

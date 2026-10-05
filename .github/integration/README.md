@@ -1,4 +1,4 @@
-# EXT/LIB integration tests
+# EXT/LIB/FPM integration tests
 
 This suite lives below `.github` because repository test fixtures with a `.php`
 suffix are intentionally ignored below `tests/`. It protects build-mode
@@ -16,6 +16,11 @@ boundaries rather than duplicating the PHP syntax coverage in `tests/compiler`.
   named private helper with different implementations to protect hidden-symbol
   isolation. Both modes include throwing `main()` declarations to verify that
   only bin mode executes the entrypoint.
+- `fpm/globals` builds a standalone FPM binary using php-builder, removes the
+  embedded include from disk and replaces the primary script with a failing
+  placeholder. With `auto_globals_jit=1`, it checks `$_SERVER`, `$_ENV`, and
+  `$_REQUEST`, their FastCGI/environment values, preservation of mutations
+  across embedded includes, and isolation across three requests in one worker.
 
 Run from the repository root:
 
@@ -31,3 +36,14 @@ C++ sources, shared libraries, server configuration, and logs remain under
 `build/integration-*` for CI artifact collection. Pass `--keep` to retain a
 successful build as well. `--suite=ext` and `--suite=lib` can isolate one mode
 while debugging; the default is `--suite=all`.
+
+The standalone FPM regression is opt-in because it builds a private PHP runtime
+with php-builder (the default `all` suite retains its EXT/LIB requirements):
+
+```sh
+PHPX_HOME=../phpx php bin/run-integration-tests.php \
+  --compiler=./bin/tpc.php --suite=fpm
+```
+
+This test requires no separately installed `php-fpm` binary. It selects PHP 8.5
+NTS by default; add `--fpm-php-version=8.4` to exercise that decoder instead.

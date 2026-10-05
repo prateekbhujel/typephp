@@ -18,7 +18,7 @@
 
 require __DIR__ . '/reference.php';
 
-$baseUrl = $argv[1] ?? 'http://127.0.0.1:18080/index.php';
+$baseUrl = $argv[1] ?? 'http://127.0.0.1:8081/quote.php';
 $levels = array_map('intval', explode(',', $argv[2] ?? '1,8,32,64'));
 $total = (int)($argv[3] ?? 200);
 $caseCount = max(1, (int)($argv[4] ?? 32));
@@ -83,7 +83,7 @@ function run_round(string $baseUrl, int $concurrency, int $total, int $caseCount
         $expected[$case] = [
             'cart' => $cart,
             'context' => $context,
-            'quote' => reference_quote($cart, $context),
+            'quote' => promo_quote($cart, $context),
         ];
     }
 

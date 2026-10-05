@@ -1,0 +1,12 @@
+name: integration-fpm-globals
+mode: bin
+php-version: '8.5'
+sapi: fpm
+php-builder:
+  extensions: []
+  zts: off
+sources:
+  - native.php
+embedded-files:
+  - request.php
+  - later.php

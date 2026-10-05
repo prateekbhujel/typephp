@@ -1,0 +1,17 @@
+name: shop-fpm
+mode: bin
+php-version: 8.5
+sapi: fpm
+php-builder:
+  extensions: []
+  zts: off
+sources:
+  - src
+  # 折扣规则与计算复用促销扩展示例的源码，避免在商城侧复制一份。
+  # 路径相对本文件，与 promo-ext/project.yml 编译的是同一份 promo.php。
+  - ../promo-ext/src
+# 页面与公共库都是「非编译代码」，内嵌进二进制，产物自包含。
+embedded-files:
+  - lib
+  - public
+build-dir: build/fpm

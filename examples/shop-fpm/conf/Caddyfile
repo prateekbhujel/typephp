@@ -1,0 +1,24 @@
+# 直接启动 Caddy 前端进程（不要 systemd 服务、不要 apt 源里的 caddy.service）：
+#
+#   cd examples/shop-fpm
+#   caddy run --watch --config conf/Caddyfile
+#
+# 要点：
+# - 站点地址写成 http://:8081（只给端口）。Caddy 为它绑 :8081 且不匹配 Host，
+#   localhost / 127.0.0.1 / 局域网 IP 都能访问。若写成 http://localhost:8081，
+#   Caddy 会加一条 Host=localhost 的匹配，用 127.0.0.1 请求会落到空路由返回【空的 200】。
+# - --watch 让配置改动自动生效；不加的话改完必须重启，否则仍代理启动时的旧端口（502）。
+# - root 是相对路径，按「启动时的工作目录」解析，所以必须在 examples/shop-fpm/ 下启动；
+#   它必须等于构建时记录的 docroot，否则内嵌页面匹配不到，FPM 会返回 File not found。
+#   起错目录的症状：GET / 是【空的 200】（浏览器空白，不是 404）；
+#   GET /index.php 要么 File not found，要么落到别处返回意外的内容。
+# - 上游要和 conf/php-fpm.conf 的 listen 一致（当前 127.0.0.1:9910）。
+
+{
+	admin off
+}
+
+http://:8081 {
+	root * ./public
+	php_fastcgi 127.0.0.1:9910
+}
