@@ -2422,22 +2422,10 @@ abstract class CompilerBase implements PropertyAccessContext
     }
 
     /**
-     * Convert to a number whenever possible, with priority float > integer > string.
+     * Preserve the operand's static type, including numeric-looking strings.
      */
     protected function parseNumericIdentifier(NodeAbstract $expr): string
     {
-        if ($expr instanceof Node\Scalar\String_) {
-            if ($this->isFloatStr($expr->value)) {
-                return (string) floatval($expr->value);
-            }
-            if ($this->isIntStr($expr->value)) {
-                return (string) intval($expr->value);
-            }
-            if ($expr->value === '0') {
-                return '0';
-            }
-        }
-
         return $this->normalizeNativeObjectValueExpr($expr, $this->parseIdentifier($expr));
     }
 
@@ -3535,9 +3523,14 @@ abstract class CompilerBase implements PropertyAccessContext
                 // A dynamic operand keeps the runtime result type. Inferring
                 // Int from the other operand would truncate floating results
                 // when ordered evaluation materializes this expression.
-                if ($leftType === Type::VAR || $leftType === Type::REF
-                    || $rightType === Type::VAR || $rightType === Type::REF) {
+                if ($this->hasDynamicScalarOperand($leftType, $rightType)) {
                     return Type::VAR;
+                }
+                if (in_array($exprType, [
+                    'Expr_BinaryOp_Mod', 'Expr_BinaryOp_ShiftLeft', 'Expr_BinaryOp_ShiftRight',
+                    'Expr_BinaryOp_BitwiseAnd', 'Expr_BinaryOp_BitwiseOr', 'Expr_BinaryOp_BitwiseXor',
+                ], true) && $this->hasOnlyNativeScalarOperands($leftType, $rightType)) {
+                    return Type::INT;
                 }
                 if ($leftType === Type::FLOAT || $rightType === Type::FLOAT) {
                     return Type::FLOAT;
@@ -3565,7 +3558,8 @@ abstract class CompilerBase implements PropertyAccessContext
                         }
                     }
                 }
-                if ($leftType === Type::INT || $rightType === Type::INT) {
+                if ($leftType === Type::INT || $rightType === Type::INT
+                    || ($leftType === Type::BOOL && $rightType === Type::BOOL)) {
                     return Type::INT;
                 }
                 break;

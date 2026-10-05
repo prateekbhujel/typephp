@@ -11,4 +11,14 @@ class NativeSlotZeroDivisorTest extends BaseTest
     {
         $this->exec('Cannot divide or modulo by zero', 'native_slot_zero_divisor.php');
     }
+
+    public function testNativeBooleanZeroDivisorIsRejected(): void
+    {
+        $this->exec('Cannot divide or modulo by zero', 'native-bool-zero-divisor.php');
+    }
+
+    public function testNativeModuloRejectsFractionalDivisorThatConvertsToZero(): void
+    {
+        $this->exec('Cannot divide or modulo by zero', 'native-fractional-modulo-zero.php');
+    }
 }

@@ -948,6 +948,33 @@ trait AssignOpTrait
         $propertyWriteTarget = $this->preparePropertyWriteTarget($node->var);
         $this->guardLiteralDivisionByZero($node->var, $node->expr, $op);
 
+        if ($node->var instanceof Expr\StaticPropertyFetch
+            && !$this->isAssignOpConcat($op)
+            && $this->hasDynamicScalarOperand($this->detectTypeOfExpr($node->var), $this->detectTypeOfExpr($node->expr))
+            && !in_array($this->detectTypeOfExpr($node->var), [Type::BIGINT, Type::DECIMAL, Type::BIGFLOAT], true)
+            && !in_array($this->detectTypeOfExpr($node->expr), [Type::BIGINT, Type::DECIMAL, Type::BIGFLOAT], true)
+        ) {
+            $property = clone $node->var;
+            // Reuse dynamic class/property names for the read and write.
+            if ($property->class instanceof Expr) {
+                $property->class = new Variable($this->parseOrderedOperand($property->class, false, true));
+            }
+            if ($property->name instanceof Expr) {
+                $property->name = new Variable($this->parseOrderedOperand($property->name, false, true));
+            }
+            $current = $this->addTmpVar(Type::VAR);
+            $this->context->beforeStmtLines[] = $current . ' = ' . $this->parseExprAsValue($property) . ';';
+            [$right, $before, $after] = $this->parseExprWithCapturedStmts($node->expr);
+            $this->appendCapturedStmtLinesToContext($before);
+            $result = $this->addTmpVar(Type::VAR);
+            $this->context->beforeStmtLines[] = $result . ' = '
+                . $this->emitDynamicBinaryOp($current, $right, $this->removeAssignOp($op)) . ';';
+            $this->appendCapturedStmtLinesToContext($after);
+            $this->context->afterStmtLines[] = $current . '.unset();';
+            $this->context->afterStmtLines[] = $result . '.unset();';
+            return $this->parseAssign(new Expr\Assign($property, new Variable($result)));
+        }
+
         // A compound division/modulo on a NATIVE scalar slot with a proven
         // zero divisor cannot fall through to the raw C++ operator (SIGFPE
         // for ints, INF for floats). A zero divisor always throws the
@@ -1045,7 +1072,38 @@ trait AssignOpTrait
                     $this->prepareConcatOperand($var, $type),
                 ]);
             }
+            if ($this->hasDynamicScalarOperand($type, $rightType)
+                && !in_array($rightType, [Type::BIGINT, Type::DECIMAL, Type::BIGFLOAT], true)
+            ) {
+                // Apply Zend coercion to the original operands, then convert
+                // the result at the fixed local's assignment boundary.
+                if ($type === Type::VAR || $type === Type::REF) {
+                    if ($this->isAssignOpPow($op)) {
+                        return $var . ' = ' . $this->emitDynamicBinaryOp($var, $expr, '**');
+                    }
+                    return $op === '+='
+                        ? $var . '.addAssign(php::Var(' . $expr . '))'
+                        : $var . ' ' . $op . ' php::Var(' . $expr . ')';
+                }
+                $value = $this->emitDynamicBinaryOp($var, $expr, $this->removeAssignOp($op));
+                return $var . ' = ' . $this->convertExprFromType($type, $value);
+            }
+            if ($this->hasOnlyNativeScalarOperands($type, $rightType)
+                && in_array($op, ['%=', '&=', '|=', '^=', '<<=', '>>='], true)
+                && ($type !== Type::INT || $rightType !== Type::INT)
+            ) {
+                $value = $this->emitNativeIntegerBinaryOp($var, $expr, $this->removeAssignOp($op));
+                return $var . ' = ' . $this->convertExprFromType($type, $value);
+            }
             if ($this->isAssignOpPow($op)) {
+                if ($this->hasOnlyNativeScalarOperands($type, $rightType)
+                    && (!$this->varIntTypes || $this->isExplicitNativeArithmeticExpr($node->var)
+                        || $type === Type::FLOAT || $rightType === Type::FLOAT)
+                ) {
+                    return $var . ' = ' . $this->convertExprFromType($type,
+                        'std::pow(' . $this->convertExprFromType($type, $var) . ', '
+                        . $this->convertExprFromType($rightType, $expr) . ')');
+                }
                 $powExpr = 'php::fn::pow(' . $var . ', ' . $rightExprStr . ')';
                 return $var . ' = ' . $this->convertVarType($var, $powExpr);
             }
@@ -1267,7 +1325,7 @@ trait AssignOpTrait
             && !$this->isNativeObjectClass($this->detectClassOfExpr($node->var->var))
             && in_array($op, ['+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '&=', '|=', '^='], true)
         ) {
-            return $this->parseCheckedIntPropertyAssignOp($node, $op);
+            return $this->parseCheckedPropertyAssignOp($node, $op);
         }
 
         if (in_array($def->type, [Type::BIGINT, Type::DECIMAL, Type::BIGFLOAT], true)) {
@@ -1284,6 +1342,19 @@ trait AssignOpTrait
                 $node->expr,
             );
             return $leftExpr . ' = ' . $value;
+        }
+        if (!$this->isAssignOpConcat($op)
+            && $this->hasDynamicScalarOperand($def->type, $rightType)
+            && !in_array($rightType, [Type::BIGINT, Type::DECIMAL, Type::BIGFLOAT], true)
+        ) {
+            if (!$this->isNativeObjectClass($this->detectClassOfExpr($node->var->var))) {
+                return $this->parseCheckedPropertyAssignOp($node, $op);
+            }
+            $var = $this->parseWritableIdentifier($node->var);
+            $rightExpr = (string) $this->parseIdentifier($node->expr);
+            $value = $this->emitDynamicBinaryOp($var, $rightExpr, $this->removeAssignOp($op));
+            return $this->promoteNativeObjectPropertyValue($def,
+                $var . ' = ' . $this->convertExprFromType($def->type, $value));
         }
         if ($this->isFixedObjectProp($def) && $rightType !== Type::VAR && !$this->canAssignStaticTypeToObjectProperty($def, $rightType)) {
             $this->fatalError(
@@ -1341,12 +1412,12 @@ trait AssignOpTrait
     }
 
     /**
-     * Apply PHP arithmetic first, then let Zend validate the int property
+     * Apply PHP arithmetic first, then let Zend validate the property
      * write. A complex receiver is materialized before the property read, so
      * both the read and write refer to the same object and the receiver has
      * exactly one observable evaluation.
      */
-    private function parseCheckedIntPropertyAssignOp(Expr\AssignOp $node, string $op): string
+    private function parseCheckedPropertyAssignOp(Expr\AssignOp $node, string $op): string
     {
         /** @var Expr\PropertyFetch $property */
         $property = $node->var;
@@ -1386,9 +1457,7 @@ trait AssignOpTrait
 
         $result = $this->addTmpVar(Type::VAR);
         $binaryOp = $this->removeAssignOp($op);
-        $value = $binaryOp === '**'
-            ? 'php::fn::pow(' . $current . ', ' . $rightExpr . ')'
-            : $current . ' ' . $binaryOp . ' (' . $rightExpr . ')';
+        $value = $this->emitDynamicBinaryOp($current, $rightExpr, $binaryOp);
         $this->context->beforeStmtLines[] = $result . ' = ' . $value . ';';
         $this->appendCapturedStmtLinesToContext($rightAfter);
 

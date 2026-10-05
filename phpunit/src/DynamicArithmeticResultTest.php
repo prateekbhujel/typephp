@@ -26,6 +26,6 @@ final class DynamicArithmeticResultTest extends \BaseTest
             self::assertStringContainsString('((left) / (right))', $body);
             self::assertStringNotContainsString('php::Var', $body);
         }
-        self::assertMatchesRegularExpression('/php::Var (tmp_var_\d+);.*?\1 = \(+tmp_var_\d+\) \/ \(divisor\)/s', $dynamic);
+        self::assertMatchesRegularExpression('/php::Var (tmp_var_\d+);.*?\1 = \(\(php::Var\(tmp_var_\d+\)\) \/ \(php::Var\(divisor\)\)\)/s', $dynamic);
     }
 }

@@ -26,7 +26,7 @@ trait BinaryOpTrait
 
         $this->demoteAutoDecimalLiteralAgainstFloat($left, $right);
 
-        // Arithmetic logic: convert to a numeric type first when possible
+        // Preserve string operands; their conversion belongs to Zend at runtime.
         $leftExpr  = $this->parseOrderedBinaryOperand($left);
         $rightExpr = $this->parseOrderedBinaryOperand($right);
 
@@ -120,6 +120,33 @@ trait BinaryOpTrait
             $this->fatalError($left, "Operator '{$op}' is not supported for Big* numeric types");
         }
 
+        $this->guardLiteralDivisionByZero($left, $right, $op);
+
+        if ($this->hasDynamicScalarOperand($leftType, $rightType)) {
+            return $this->emitDynamicBinaryOp($leftExpr, $rightExpr, $op);
+        }
+
+        // C++ integer-only operators require integral operands even when a
+        // native float participates. Conversion happens before the operation.
+        if ($this->hasOnlyNativeScalarOperands($leftType, $rightType)
+            && in_array($op, ['%', '&', '|', '^', '<<', '>>'], true)
+            && ($leftType !== Type::INT || $rightType !== Type::INT)
+        ) {
+            $leftValue = $this->constantNumericValue($left, true);
+            $rightValue = $this->constantNumericValue($right, true);
+            if ($leftValue !== null && $rightValue !== null) {
+                $integerLeft = new Node\Scalar\Int_((int) $leftValue, $left->getAttributes());
+                $integerRight = new Node\Scalar\Int_((int) $rightValue, $right->getAttributes());
+                $folded = in_array($op, ['<<', '>>'], true)
+                    ? $this->tryFoldConstantShift($integerLeft, $integerRight, $op, $leftExpr, $rightExpr)
+                    : $this->tryFoldConstantIntArithmetic($integerLeft, $integerRight, $op);
+                if ($folded !== null) {
+                    return $folded;
+                }
+            }
+            return $this->emitNativeIntegerBinaryOp($leftExpr, $rightExpr, $op);
+        }
+
         // Only promote between native types (Int ↔ Float).  When one side is
         // php::Var, let the Variant operator handle type coercion so that
         // run-time PHP type-juggling rules are followed correctly.
@@ -128,8 +155,6 @@ trait BinaryOpTrait
         } elseif ($rightType === Type::FLOAT && $leftType === Type::INT) {
             $leftExpr = $this->convertExprType($leftExpr, $leftType, Type::FLOAT);
         }
-
-        $this->guardLiteralDivisionByZero($left, $right, $op);
 
         $constantDivisionByZero = $this->handleNestedConstantDivisionByZero(
             $left,
@@ -236,6 +261,33 @@ trait BinaryOpTrait
         }
 
         return '((' . $leftExpr . ') ' . $op . ' (' . $rightExpr . '))';
+    }
+
+    protected function hasDynamicScalarOperand(string $leftType, string $rightType): bool
+    {
+        return in_array(Type::getReferencedType($leftType), [Type::STR, Type::VAR, Type::REF], true)
+            || in_array(Type::getReferencedType($rightType), [Type::STR, Type::VAR, Type::REF], true);
+    }
+
+    protected function hasOnlyNativeScalarOperands(string $leftType, string $rightType): bool
+    {
+        $nativeTypes = [Type::BOOL, Type::INT, Type::FLOAT];
+        return in_array(Type::getReferencedType($leftType), $nativeTypes, true)
+            && in_array(Type::getReferencedType($rightType), $nativeTypes, true);
+    }
+
+    protected function emitDynamicBinaryOp(string $left, string $right, string $op): string
+    {
+        $left = 'php::Var(' . $left . ')';
+        $right = 'php::Var(' . $right . ')';
+        return $op === '**'
+            ? '(' . $left . ').pow(' . $right . ')'
+            : '((' . $left . ') ' . $op . ' (' . $right . '))';
+    }
+
+    protected function emitNativeIntegerBinaryOp(string $left, string $right, string $op): string
+    {
+        return '((' . $this->convertIntExpr($left) . ') ' . $op . ' (' . $this->convertIntExpr($right) . '))';
     }
 
     /**
@@ -463,6 +515,9 @@ trait BinaryOpTrait
         if ($expr instanceof Node\Scalar\Float_) {
             return $expr->value;
         }
+        if (($bool = $this->nativeBoolLiteral($expr)) !== null) {
+            return $bool === 'true' ? 1 : 0;
+        }
         if ($expr instanceof Node\Expr\UnaryPlus) {
             return $this->constantNumericValue($expr->expr, $nativeSemantics);
         }
@@ -664,6 +719,9 @@ trait BinaryOpTrait
 
     protected function parseOrderedBinaryOperand(NodeAbstract $expr): string
     {
+        if (($bool = $this->nativeBoolLiteral($expr)) !== null) {
+            return $bool;
+        }
         return $this->parseOrderedOperand($expr, true);
     }
 
@@ -1114,6 +1172,20 @@ trait BinaryOpTrait
         }
         $left  = $this->parseOrderedOperand($expr->left, false);
         $right = $this->parseOrderedOperand($expr->right, false);
+        if ($this->hasDynamicScalarOperand($leftType, $rightType)) {
+            return $this->emitDynamicBinaryOp($left, $right, '**');
+        }
+        if ($this->hasOnlyNativeScalarOperands($leftType, $rightType)
+            && (!$this->varIntTypes
+                || $this->isExplicitNativeArithmeticExpr($expr->left)
+                || $this->isExplicitNativeArithmeticExpr($expr->right)
+                || $leftType === Type::FLOAT || $rightType === Type::FLOAT)
+        ) {
+            $left = $this->convertExprFromType($leftType, $left);
+            $right = $this->convertExprFromType($rightType, $right);
+            $pow = 'std::pow(' . $left . ', ' . $right . ')';
+            return $this->detectTypeOfExpr($expr) === Type::FLOAT ? $pow : $this->convertIntExpr($pow);
+        }
         return 'php::fn::pow(' . $left . ', ' . $right . ')';
     }
 
@@ -1151,6 +1223,9 @@ trait BinaryOpTrait
         if ($pythonOperator !== null) {
             return $pythonOperator;
         }
+        if ($this->hasOnlyNativeScalarOperands($this->detectTypeOfExpr($expr->left), $this->detectTypeOfExpr($expr->right))) {
+            return $this->parseBinaryOp($expr->left, $expr->right, '==');
+        }
         return $this->genBigNumericCmp($expr, ' == 0')
             ?? 'php::equals(' . $this->parseCompareExpr($expr->left) . ', ' . $this->parseCompareExpr($expr->right) . ')';
     }
@@ -1160,6 +1235,9 @@ trait BinaryOpTrait
         $pythonOperator = $this->parsePythonBinaryOperator($expr);
         if ($pythonOperator !== null) {
             return $pythonOperator;
+        }
+        if ($this->hasOnlyNativeScalarOperands($this->detectTypeOfExpr($expr->left), $this->detectTypeOfExpr($expr->right))) {
+            return $this->parseBinaryOp($expr->left, $expr->right, '!=');
         }
         return $this->genBigNumericCmp($expr, ' != 0')
             ?? '!php::equals(' . $this->parseCompareExpr($expr->left) . ', ' . $this->parseCompareExpr($expr->right) . ')';
@@ -1440,7 +1518,17 @@ trait BinaryOpTrait
         string $op
     ): void
     {
-        if (($op === '/' or $op === '%' or $op === '/=' or $op === '%=') and $this->isZeroLiteral($right)) {
+        if (!in_array($op, ['/', '%', '/=', '%='], true)) {
+            return;
+        }
+        $zeroDivisor = $this->isZeroLiteral($right) || $this->nativeBoolLiteral($right) === 'false';
+        if (in_array($op, ['%', '%='], true)
+            && $this->hasOnlyNativeScalarOperands($this->detectTypeOfExpr($left), $this->detectTypeOfExpr($right))
+        ) {
+            $value = $this->constantNumericValue($right, true);
+            $zeroDivisor = $zeroDivisor || ($value !== null && (int) $value === 0);
+        }
+        if ($zeroDivisor) {
             if (!$this->usesPhpArithmeticForZeroDivisor($left, $right)) {
                 $this->fatalError($right, 'Cannot divide or modulo by zero');
             }
@@ -1459,9 +1547,12 @@ trait BinaryOpTrait
      */
     protected function usesPhpArithmeticForZeroDivisor(NodeAbstract $left, NodeAbstract $right): bool
     {
-        return $this->varIntTypes
-            || $this->detectTypeOfExpr($left) === Type::VAR
-            || $this->detectTypeOfExpr($right) === Type::VAR;
+        $leftType = $this->detectTypeOfExpr($left);
+        $rightType = $this->detectTypeOfExpr($right);
+        return $this->hasDynamicScalarOperand($leftType, $rightType)
+            || ($this->varIntTypes
+                && in_array($leftType, [Type::INT, Type::FLOAT], true)
+                && in_array($rightType, [Type::INT, Type::FLOAT], true));
     }
 
     protected function parseBinaryOpMinus(Expr\BinaryOp\Minus $expr): string

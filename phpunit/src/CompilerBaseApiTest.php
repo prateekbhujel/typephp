@@ -398,18 +398,14 @@ PHP);
 
     public function testNumericStringIdentifiersGenerateSourceCodeStrings(): void
     {
-        $this->assertSame(
-            (string) floatval('0.2'),
-            $this->invokeMethod('parseNumericIdentifier', new \PhpParser\Node\Scalar\String_('0.2'))
-        );
-        $this->assertSame(
-            '42',
-            $this->invokeMethod('parseNumericIdentifier', new \PhpParser\Node\Scalar\String_('42'))
-        );
-        $this->assertSame(
-            '0',
-            $this->invokeMethod('parseNumericIdentifier', new \PhpParser\Node\Scalar\String_('0'))
-        );
+        foreach (['0.2', '42', '0', '1e2', '-9223372036854775808', 'not numeric'] as $value) {
+            $expr = new \PhpParser\Node\Scalar\String_($value);
+            $this->assertSame(Type::STR, $this->invokeMethod('detectTypeOfExpr', $expr));
+            $this->assertSame(
+                $this->invokeMethod('parseIdentifier', $expr),
+                $this->invokeMethod('parseNumericIdentifier', $expr),
+            );
+        }
     }
 
     public function testWindowsIntegerLiteralSuffixForInternalConstants(): void
