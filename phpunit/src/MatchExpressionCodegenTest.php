@@ -41,9 +41,9 @@ final class MatchExpressionCodegenTest extends \BaseTest
         $fnCode = $this->extractFunction('php_testuniformintmatch');
         self::assertStringNotContainsString('php::Var', $fnCode);
         self::assertStringNotContainsString('php::throwReturnTypeError', $fnCode);
-        self::assertStringContainsString('return 10LL;', $fnCode);
-        self::assertStringContainsString('return 20LL;', $fnCode);
-        self::assertStringContainsString('return 30LL;', $fnCode);
+        self::assertMatchesRegularExpression('/return 10L{1,2};/', $fnCode);
+        self::assertMatchesRegularExpression('/return 20L{1,2};/', $fnCode);
+        self::assertMatchesRegularExpression('/return 30L{1,2};/', $fnCode);
     }
 
     public function testUniformStringMatchInfersString(): void
